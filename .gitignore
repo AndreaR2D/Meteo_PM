@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Data (too large / regenerable)
+london-weather-backtest/data/raw/
+london-weather-backtest/data/processed/
+london-weather-backtest/output/
+
+# Paper trade logs (keep history.csv, ignore logs)
+paper_trade/collector.log
+paper_trade/cron.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Claude
+.claude/
