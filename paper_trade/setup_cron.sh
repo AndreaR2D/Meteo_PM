@@ -24,10 +24,10 @@ echo "Running a test collection..."
 cd "$SCRIPT_DIR" && "$PYTHON" collector.py
 echo ""
 
-# Setup cron: every day at 19h Paris time (CET=18h UTC, CEST=17h UTC)
-# We schedule at 17:00 UTC to cover summer time (CEST).
-# In winter (CET), this runs at 18h Paris = still fine.
-CRON_CMD="0 17 * * * cd $SCRIPT_DIR && $PYTHON collector.py >> $SCRIPT_DIR/cron.log 2>&1"
+# Setup cron: daily at 07:00 UTC (09h Paris summer / 08h Paris winter)
+# This ensures both ECMWF 00z (~06-07h UTC) and GFS 00z (~03:30-04:30h UTC)
+# are available on Open-Meteo before we fetch.
+CRON_CMD="0 7 * * * cd $SCRIPT_DIR && $PYTHON collector.py >> $SCRIPT_DIR/cron.log 2>&1"
 
 # Check if cron entry already exists
 if crontab -l 2>/dev/null | grep -q "collector.py"; then
@@ -39,7 +39,8 @@ fi
 
 echo ""
 echo "=== Done ==="
-echo "The collector will run daily at 17:00 UTC (19h Paris summer / 18h Paris winter)."
+echo "The collector will run daily at 07:00 UTC (09h Paris summer / 08h Paris winter)."
+echo "Each run: J-2, J-1, J forecasts for today + PM resolution for yesterday."
 echo "Logs:    $SCRIPT_DIR/collector.log"
 echo "Data:    $SCRIPT_DIR/history.csv"
 echo "Cron:    crontab -l"

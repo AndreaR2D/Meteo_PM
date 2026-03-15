@@ -1,15 +1,16 @@
 """Daily data collector for London weather paper trading.
 
-Runs once per day at 19h Paris time (via cron/scheduler).
+Single daily run at 06h Paris time (via cron/scheduler).
 Each run:
-1. Fetches J-2 forecasts (ECMWF + GFS) for TODAY from Open-Meteo
-2. Fetches PM resolution for YESTERDAY (winning bucket + actual max temp)
+1. Fetches J-2, J-1, J forecasts for TODAY from Open-Meteo
+2. Fetches PM resolution for YESTERDAY (backfill pm_max_temp)
 3. Appends/updates rows in history.csv
 
 CSV columns:
-    date, ecmwf_j2, gfs_j2, convergence_j2, pm_max_temp
-
-The forecasts are written on day D, the PM resolution is backfilled on day D+1.
+    date, ecmwf_j2, gfs_j2, convergence_j2,
+    ecmwf_j1, gfs_j1, convergence_j1,
+    ecmwf_j, gfs_j, convergence_j,
+    pm_max_temp
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import requests
 
 from config import (
     DATA_FILE,
+    FORECAST_API,
     GAMMA_API,
     LATITUDE,
     LOG_FILE,
@@ -49,7 +51,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CSV_COLUMNS = ["date", "ecmwf_j2", "gfs_j2", "convergence_j2", "pm_max_temp"]
+CSV_COLUMNS = [
+    "date",
+    "ecmwf_j2", "gfs_j2", "convergence_j2",
+    "ecmwf_j1", "gfs_j1", "convergence_j1",
+    "ecmwf_j", "gfs_j", "convergence_j",
+    "pm_max_temp",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +80,15 @@ def _read_csv() -> list[dict]:
         return []
     with open(DATA_FILE, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        return list(reader)
+        rows = []
+        for row in reader:
+            # Drop spurious None key from extra trailing commas
+            row.pop(None, None)
+            # Ensure all expected columns exist
+            for col in CSV_COLUMNS:
+                row.setdefault(col, "")
+            rows.append(row)
+        return rows
 
 
 def _write_csv(rows: list[dict]) -> None:
@@ -140,6 +156,112 @@ def fetch_j2_forecasts(target: date) -> dict[str, float | None]:
 
         except Exception as e:
             logger.error("Failed to fetch %s forecast for %s: %s", model_key.upper(), target, e)
+            results[model_key] = None
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Open-Meteo: J-1 forecasts
+# ---------------------------------------------------------------------------
+
+def fetch_j1_forecasts(target: date) -> dict[str, float | None]:
+    """Fetch J-1 forecast (max temp) for target date from both models.
+
+    Uses the Previous Runs API with temperature_2m_previous_day1 (hourly),
+    then takes the daily max.
+
+    Returns dict: {"ecmwf": temp_or_None, "gfs": temp_or_None}
+    """
+    results = {}
+
+    for model_key, model_id in MODELS.items():
+        try:
+            resp = requests.get(
+                PREVIOUS_RUNS_API,
+                params={
+                    "latitude": LATITUDE,
+                    "longitude": LONGITUDE,
+                    "start_date": target.isoformat(),
+                    "end_date": target.isoformat(),
+                    "hourly": "temperature_2m_previous_day1",
+                    "models": model_id,
+                    "timezone": "UTC",
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            hourly = data.get("hourly", {})
+            temps = hourly.get("temperature_2m_previous_day1", [])
+            valid = [t for t in temps if t is not None]
+
+            if valid:
+                results[model_key] = round(max(valid))
+                logger.info(
+                    "%s J-1 forecast for %s: %.1f°C (max of %d hourly values)",
+                    model_key.upper(), target, results[model_key], len(valid),
+                )
+            else:
+                results[model_key] = None
+                logger.warning("%s J-1 forecast for %s: no valid data", model_key.upper(), target)
+
+        except Exception as e:
+            logger.error("Failed to fetch %s J-1 forecast for %s: %s", model_key.upper(), target, e)
+            results[model_key] = None
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Open-Meteo: J forecasts (same-day, morning run)
+# ---------------------------------------------------------------------------
+
+def fetch_j_forecasts(target: date) -> dict[str, float | None]:
+    """Fetch same-day forecast (max temp) for target date from both models.
+
+    Uses the standard Forecast API with daily temperature_2m_max.
+    Intended to run at 6h Paris time to capture the latest morning model run.
+
+    Returns dict: {"ecmwf": temp_or_None, "gfs": temp_or_None}
+    """
+    results = {}
+
+    for model_key, model_id in MODELS.items():
+        try:
+            resp = requests.get(
+                FORECAST_API,
+                params={
+                    "latitude": LATITUDE,
+                    "longitude": LONGITUDE,
+                    "start_date": target.isoformat(),
+                    "end_date": target.isoformat(),
+                    "daily": "temperature_2m_max",
+                    "models": model_id,
+                    "timezone": "UTC",
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            daily = data.get("daily", {})
+            temps = daily.get("temperature_2m_max", [])
+            valid = [t for t in temps if t is not None]
+
+            if valid:
+                results[model_key] = round(max(valid))
+                logger.info(
+                    "%s J forecast for %s: %.1f°C",
+                    model_key.upper(), target, results[model_key],
+                )
+            else:
+                results[model_key] = None
+                logger.warning("%s J forecast for %s: no valid data", model_key.upper(), target)
+
+        except Exception as e:
+            logger.error("Failed to fetch %s J forecast for %s: %s", model_key.upper(), target, e)
             results[model_key] = None
 
     return results
@@ -247,11 +369,33 @@ def fetch_pm_resolution(target: date) -> float | None:
 # Main collection logic
 # ---------------------------------------------------------------------------
 
-def collect() -> None:
-    """Run the daily collection.
+def _convergence(ecmwf: float | None, gfs: float | None) -> str:
+    """Return 'yes'/'no'/'' for model convergence."""
+    if ecmwf is not None and gfs is not None:
+        return "yes" if round(ecmwf) == round(gfs) else "no"
+    return ""
 
-    Called at 19h Paris time each day (day D):
-    1. Fetch J-2 forecasts for today (D) and write/update row
+
+def _fmt(val: float | None) -> str:
+    return str(int(val)) if val is not None else ""
+
+
+def _ensure_row(rows: list[dict], date_str: str) -> int:
+    """Return index of existing row for date_str, or append a blank row."""
+    idx = _find_row(rows, date_str)
+    if idx is not None:
+        return idx
+    blank = {col: "" for col in CSV_COLUMNS}
+    blank["date"] = date_str
+    rows.append(blank)
+    return len(rows) - 1
+
+
+def collect() -> None:
+    """Daily run (6h Paris time).
+
+    Called each day (day D):
+    1. Fetch J-2, J-1, J forecasts for today (D)
     2. Fetch PM resolution for yesterday (D-1) and backfill
     """
     today = date.today()
@@ -262,65 +406,61 @@ def collect() -> None:
     logger.info("=" * 50)
 
     rows = _read_csv()
+    today_str = today.isoformat()
+    idx = _ensure_row(rows, today_str)
 
     # --- Step 1: J-2 forecasts for today ---
     logger.info("Fetching J-2 forecasts for %s...", today)
-    forecasts = fetch_j2_forecasts(today)
+    fc2 = fetch_j2_forecasts(today)
+    ecmwf2, gfs2 = fc2.get("ecmwf"), fc2.get("gfs")
 
-    ecmwf = forecasts.get("ecmwf")
-    gfs = forecasts.get("gfs")
-
-    # Convergence: both models predict the same integer °C
-    if ecmwf is not None and gfs is not None:
-        convergence = "yes" if round(ecmwf) == round(gfs) else "no"
-    else:
-        convergence = ""
-
-    today_str = today.isoformat()
-    idx = _find_row(rows, today_str)
-
-    today_row = {
-        "date": today_str,
-        "ecmwf_j2": str(int(ecmwf)) if ecmwf is not None else "",
-        "gfs_j2": str(int(gfs)) if gfs is not None else "",
-        "convergence_j2": convergence,
-        "pm_max_temp": "",  # will be filled tomorrow
-    }
-
-    if idx is not None:
-        # Preserve pm_max_temp if already set
-        today_row["pm_max_temp"] = rows[idx].get("pm_max_temp", "")
-        rows[idx] = today_row
-    else:
-        rows.append(today_row)
+    rows[idx]["ecmwf_j2"] = _fmt(ecmwf2)
+    rows[idx]["gfs_j2"] = _fmt(gfs2)
+    rows[idx]["convergence_j2"] = _convergence(ecmwf2, gfs2)
 
     logger.info(
-        "Today's forecasts: ECMWF=%s°C, GFS=%s°C, convergence=%s",
-        ecmwf, gfs, convergence,
+        "J-2 forecasts: ECMWF=%s°C, GFS=%s°C, convergence=%s",
+        ecmwf2, gfs2, rows[idx]["convergence_j2"],
     )
 
-    # --- Step 2: PM resolution for yesterday ---
+    # --- Step 2: J-1 forecasts for today ---
+    logger.info("Fetching J-1 forecasts for %s...", today)
+    fc1 = fetch_j1_forecasts(today)
+    ecmwf1, gfs1 = fc1.get("ecmwf"), fc1.get("gfs")
+
+    rows[idx]["ecmwf_j1"] = _fmt(ecmwf1)
+    rows[idx]["gfs_j1"] = _fmt(gfs1)
+    rows[idx]["convergence_j1"] = _convergence(ecmwf1, gfs1)
+
+    logger.info(
+        "J-1 forecasts: ECMWF=%s°C, GFS=%s°C, convergence=%s",
+        ecmwf1, gfs1, rows[idx]["convergence_j1"],
+    )
+
+    # --- Step 3: J forecasts for today ---
+    logger.info("Fetching J forecasts for %s...", today)
+    fc0 = fetch_j_forecasts(today)
+    ecmwf0, gfs0 = fc0.get("ecmwf"), fc0.get("gfs")
+
+    rows[idx]["ecmwf_j"] = _fmt(ecmwf0)
+    rows[idx]["gfs_j"] = _fmt(gfs0)
+    rows[idx]["convergence_j"] = _convergence(ecmwf0, gfs0)
+
+    logger.info(
+        "J forecasts: ECMWF=%s°C, GFS=%s°C, convergence=%s",
+        ecmwf0, gfs0, rows[idx]["convergence_j"],
+    )
+
+    # --- Step 4: PM resolution for yesterday ---
     logger.info("Fetching PM resolution for %s...", yesterday)
     pm_temp = fetch_pm_resolution(yesterday)
 
     yesterday_str = yesterday.isoformat()
-    idx_y = _find_row(rows, yesterday_str)
+    idx_y = _ensure_row(rows, yesterday_str)
 
     if pm_temp is not None:
-        pm_int = str(int(pm_temp))
-        if idx_y is not None:
-            rows[idx_y]["pm_max_temp"] = pm_int
-            logger.info("Updated yesterday's PM temp: %s°C", pm_int)
-        else:
-            # Row for yesterday doesn't exist (first run or missed day)
-            rows.append({
-                "date": yesterday_str,
-                "ecmwf_j2": "",
-                "gfs_j2": "",
-                "convergence_j2": "",
-                "pm_max_temp": pm_int,
-            })
-            logger.info("Created row for yesterday with PM temp: %s°C", pm_int)
+        rows[idx_y]["pm_max_temp"] = _fmt(pm_temp)
+        logger.info("Updated yesterday's PM temp: %s°C", _fmt(pm_temp))
     else:
         logger.info("PM resolution for %s not available yet", yesterday)
 

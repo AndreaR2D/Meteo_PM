@@ -1,3 +1,3 @@
-date,ecmwf_j2,gfs_j2,convergence_j2,pm_max_temp
-2026-03-14,,,,11
-2026-03-15,10,10,yes,
+date,ecmwf_j2,gfs_j2,convergence_j2,ecmwf_j1,gfs_j1,convergence_j1,ecmwf_j,gfs_j,convergence_j,pm_max_temp
+2026-03-14,,,,,,,,,,11
+2026-03-15,10,10,yes,11,11,yes,11,12,no,

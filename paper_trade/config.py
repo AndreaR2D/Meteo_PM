@@ -14,6 +14,7 @@ TIMEZONE = "Europe/London"
 
 # --- APIs ---
 PREVIOUS_RUNS_API = "https://previous-runs-api.open-meteo.com/v1/forecast"
+FORECAST_API = "https://api.open-meteo.com/v1/forecast"
 GAMMA_API = "https://gamma-api.polymarket.com/events"
 
 # --- Weather models ---
