@@ -1,13 +1,13 @@
-"""Daily data collector for London weather paper trading.
+"""Daily data collector for multi-city weather paper trading.
 
-Single daily run at 06h Paris time (via cron/scheduler).
-Each run:
+Single daily run at 07:00 UTC (via cron/scheduler).
+Each run, for each city (London, Tokyo, Sao Paulo):
 1. Fetches J-2, J-1, J forecasts for TODAY from Open-Meteo
 2. Fetches PM resolution for YESTERDAY (backfill pm_max_temp)
 3. Appends/updates rows in history.csv
 
 CSV columns:
-    date, ecmwf_j2, gfs_j2, convergence_j2,
+    ville, date, ecmwf_j2, gfs_j2, convergence_j2,
     ecmwf_j1, gfs_j1, convergence_j1,
     ecmwf_j, gfs_j, convergence_j,
     pm_max_temp
@@ -26,12 +26,11 @@ from pathlib import Path
 import requests
 
 from config import (
+    CITIES,
     DATA_FILE,
     FORECAST_API,
     GAMMA_API,
-    LATITUDE,
     LOG_FILE,
-    LONGITUDE,
     MODELS,
     MONTH_NAMES,
     PREVIOUS_RUNS_API,
@@ -52,7 +51,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 CSV_COLUMNS = [
-    "date",
+    "ville", "date",
     "ecmwf_j2", "gfs_j2", "convergence_j2",
     "ecmwf_j1", "gfs_j1", "convergence_j1",
     "ecmwf_j", "gfs_j", "convergence_j",
@@ -64,9 +63,9 @@ CSV_COLUMNS = [
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_slug(target: date) -> str:
+def _build_slug(target: date, slug_name: str) -> str:
     month_name = MONTH_NAMES[target.month]
-    slug = f"highest-temperature-in-london-on-{month_name}-{target.day}"
+    slug = f"highest-temperature-in-{slug_name}-on-{month_name}-{target.day}"
     if (target.year > YEAR_SUFFIX_START_YEAR
             or (target.year == YEAR_SUFFIX_START_YEAR
                 and target.month >= YEAR_SUFFIX_START_MONTH)):
@@ -94,15 +93,15 @@ def _read_csv() -> list[dict]:
 def _write_csv(rows: list[dict]) -> None:
     """Write rows back to history.csv."""
     with open(DATA_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
 
-def _find_row(rows: list[dict], target_date: str) -> int | None:
-    """Find row index for a given date string (YYYY-MM-DD)."""
+def _find_row(rows: list[dict], ville: str, target_date: str) -> int | None:
+    """Find row index for a given city + date."""
     for i, r in enumerate(rows):
-        if r["date"] == target_date:
+        if r["ville"] == ville and r["date"] == target_date:
             return i
     return None
 
@@ -111,7 +110,7 @@ def _find_row(rows: list[dict], target_date: str) -> int | None:
 # Open-Meteo: J-2 forecasts
 # ---------------------------------------------------------------------------
 
-def fetch_j2_forecasts(target: date) -> dict[str, float | None]:
+def fetch_j2_forecasts(target: date, city: dict) -> dict[str, float | None]:
     """Fetch J-2 forecast (max temp) for target date from both models.
 
     Uses the Previous Runs API with temperature_2m_previous_day2 (hourly),
@@ -126,8 +125,8 @@ def fetch_j2_forecasts(target: date) -> dict[str, float | None]:
             resp = requests.get(
                 PREVIOUS_RUNS_API,
                 params={
-                    "latitude": LATITUDE,
-                    "longitude": LONGITUDE,
+                    "latitude": city["latitude"],
+                    "longitude": city["longitude"],
                     "start_date": target.isoformat(),
                     "end_date": target.isoformat(),
                     "hourly": "temperature_2m_previous_day2",
@@ -165,7 +164,7 @@ def fetch_j2_forecasts(target: date) -> dict[str, float | None]:
 # Open-Meteo: J-1 forecasts
 # ---------------------------------------------------------------------------
 
-def fetch_j1_forecasts(target: date) -> dict[str, float | None]:
+def fetch_j1_forecasts(target: date, city: dict) -> dict[str, float | None]:
     """Fetch J-1 forecast (max temp) for target date from both models.
 
     Uses the Previous Runs API with temperature_2m_previous_day1 (hourly),
@@ -180,8 +179,8 @@ def fetch_j1_forecasts(target: date) -> dict[str, float | None]:
             resp = requests.get(
                 PREVIOUS_RUNS_API,
                 params={
-                    "latitude": LATITUDE,
-                    "longitude": LONGITUDE,
+                    "latitude": city["latitude"],
+                    "longitude": city["longitude"],
                     "start_date": target.isoformat(),
                     "end_date": target.isoformat(),
                     "hourly": "temperature_2m_previous_day1",
@@ -218,11 +217,11 @@ def fetch_j1_forecasts(target: date) -> dict[str, float | None]:
 # Open-Meteo: J forecasts (same-day, morning run)
 # ---------------------------------------------------------------------------
 
-def fetch_j_forecasts(target: date) -> dict[str, float | None]:
+def fetch_j_forecasts(target: date, city: dict) -> dict[str, float | None]:
     """Fetch same-day forecast (max temp) for target date from both models.
 
     Uses the standard Forecast API with daily temperature_2m_max.
-    Intended to run at 6h Paris time to capture the latest morning model run.
+    Intended to run at 07:00 UTC to capture the latest morning model run.
 
     Returns dict: {"ecmwf": temp_or_None, "gfs": temp_or_None}
     """
@@ -233,8 +232,8 @@ def fetch_j_forecasts(target: date) -> dict[str, float | None]:
             resp = requests.get(
                 FORECAST_API,
                 params={
-                    "latitude": LATITUDE,
-                    "longitude": LONGITUDE,
+                    "latitude": city["latitude"],
+                    "longitude": city["longitude"],
                     "start_date": target.isoformat(),
                     "end_date": target.isoformat(),
                     "daily": "temperature_2m_max",
@@ -315,14 +314,14 @@ def _parse_winning_temp(label: str) -> float | None:
     return None
 
 
-def fetch_pm_resolution(target: date) -> float | None:
+def fetch_pm_resolution(target: date, slug_name: str) -> float | None:
     """Fetch the resolved max temperature from Polymarket for target date.
 
     Finds the winning market (outcomePrices YES=1) and extracts the temp.
 
     Returns the winning temperature in °C, or None if not resolved yet.
     """
-    slug = _build_slug(target)
+    slug = _build_slug(target, slug_name)
 
     try:
         resp = requests.get(GAMMA_API, params={"slug": slug}, timeout=30)
@@ -380,21 +379,22 @@ def _fmt(val: float | None) -> str:
     return str(int(val)) if val is not None else ""
 
 
-def _ensure_row(rows: list[dict], date_str: str) -> int:
-    """Return index of existing row for date_str, or append a blank row."""
-    idx = _find_row(rows, date_str)
+def _ensure_row(rows: list[dict], ville: str, date_str: str) -> int:
+    """Return index of existing row for ville+date, or append a blank row."""
+    idx = _find_row(rows, ville, date_str)
     if idx is not None:
         return idx
     blank = {col: "" for col in CSV_COLUMNS}
+    blank["ville"] = ville
     blank["date"] = date_str
     rows.append(blank)
     return len(rows) - 1
 
 
 def collect() -> None:
-    """Daily run (6h Paris time).
+    """Daily run (07:00 UTC).
 
-    Called each day (day D):
+    Called each day (day D), for each city:
     1. Fetch J-2, J-1, J forecasts for today (D)
     2. Fetch PM resolution for yesterday (D-1) and backfill
     """
@@ -406,66 +406,72 @@ def collect() -> None:
     logger.info("=" * 50)
 
     rows = _read_csv()
-    today_str = today.isoformat()
-    idx = _ensure_row(rows, today_str)
 
-    # --- Step 1: J-2 forecasts for today ---
-    logger.info("Fetching J-2 forecasts for %s...", today)
-    fc2 = fetch_j2_forecasts(today)
-    ecmwf2, gfs2 = fc2.get("ecmwf"), fc2.get("gfs")
+    for ville, city in CITIES.items():
+        logger.info("-" * 40)
+        logger.info("City: %s", ville)
+        logger.info("-" * 40)
 
-    rows[idx]["ecmwf_j2"] = _fmt(ecmwf2)
-    rows[idx]["gfs_j2"] = _fmt(gfs2)
-    rows[idx]["convergence_j2"] = _convergence(ecmwf2, gfs2)
+        today_str = today.isoformat()
+        idx = _ensure_row(rows, ville, today_str)
 
-    logger.info(
-        "J-2 forecasts: ECMWF=%s°C, GFS=%s°C, convergence=%s",
-        ecmwf2, gfs2, rows[idx]["convergence_j2"],
-    )
+        # --- Step 1: J-2 forecasts for today ---
+        logger.info("Fetching J-2 forecasts for %s / %s...", ville, today)
+        fc2 = fetch_j2_forecasts(today, city)
+        ecmwf2, gfs2 = fc2.get("ecmwf"), fc2.get("gfs")
 
-    # --- Step 2: J-1 forecasts for today ---
-    logger.info("Fetching J-1 forecasts for %s...", today)
-    fc1 = fetch_j1_forecasts(today)
-    ecmwf1, gfs1 = fc1.get("ecmwf"), fc1.get("gfs")
+        rows[idx]["ecmwf_j2"] = _fmt(ecmwf2)
+        rows[idx]["gfs_j2"] = _fmt(gfs2)
+        rows[idx]["convergence_j2"] = _convergence(ecmwf2, gfs2)
 
-    rows[idx]["ecmwf_j1"] = _fmt(ecmwf1)
-    rows[idx]["gfs_j1"] = _fmt(gfs1)
-    rows[idx]["convergence_j1"] = _convergence(ecmwf1, gfs1)
+        logger.info(
+            "J-2 forecasts: ECMWF=%s°C, GFS=%s°C, convergence=%s",
+            ecmwf2, gfs2, rows[idx]["convergence_j2"],
+        )
 
-    logger.info(
-        "J-1 forecasts: ECMWF=%s°C, GFS=%s°C, convergence=%s",
-        ecmwf1, gfs1, rows[idx]["convergence_j1"],
-    )
+        # --- Step 2: J-1 forecasts for today ---
+        logger.info("Fetching J-1 forecasts for %s / %s...", ville, today)
+        fc1 = fetch_j1_forecasts(today, city)
+        ecmwf1, gfs1 = fc1.get("ecmwf"), fc1.get("gfs")
 
-    # --- Step 3: J forecasts for today ---
-    logger.info("Fetching J forecasts for %s...", today)
-    fc0 = fetch_j_forecasts(today)
-    ecmwf0, gfs0 = fc0.get("ecmwf"), fc0.get("gfs")
+        rows[idx]["ecmwf_j1"] = _fmt(ecmwf1)
+        rows[idx]["gfs_j1"] = _fmt(gfs1)
+        rows[idx]["convergence_j1"] = _convergence(ecmwf1, gfs1)
 
-    rows[idx]["ecmwf_j"] = _fmt(ecmwf0)
-    rows[idx]["gfs_j"] = _fmt(gfs0)
-    rows[idx]["convergence_j"] = _convergence(ecmwf0, gfs0)
+        logger.info(
+            "J-1 forecasts: ECMWF=%s°C, GFS=%s°C, convergence=%s",
+            ecmwf1, gfs1, rows[idx]["convergence_j1"],
+        )
 
-    logger.info(
-        "J forecasts: ECMWF=%s°C, GFS=%s°C, convergence=%s",
-        ecmwf0, gfs0, rows[idx]["convergence_j"],
-    )
+        # --- Step 3: J forecasts for today ---
+        logger.info("Fetching J forecasts for %s / %s...", ville, today)
+        fc0 = fetch_j_forecasts(today, city)
+        ecmwf0, gfs0 = fc0.get("ecmwf"), fc0.get("gfs")
 
-    # --- Step 4: PM resolution for yesterday ---
-    logger.info("Fetching PM resolution for %s...", yesterday)
-    pm_temp = fetch_pm_resolution(yesterday)
+        rows[idx]["ecmwf_j"] = _fmt(ecmwf0)
+        rows[idx]["gfs_j"] = _fmt(gfs0)
+        rows[idx]["convergence_j"] = _convergence(ecmwf0, gfs0)
 
-    yesterday_str = yesterday.isoformat()
-    idx_y = _ensure_row(rows, yesterday_str)
+        logger.info(
+            "J forecasts: ECMWF=%s°C, GFS=%s°C, convergence=%s",
+            ecmwf0, gfs0, rows[idx]["convergence_j"],
+        )
 
-    if pm_temp is not None:
-        rows[idx_y]["pm_max_temp"] = _fmt(pm_temp)
-        logger.info("Updated yesterday's PM temp: %s°C", _fmt(pm_temp))
-    else:
-        logger.info("PM resolution for %s not available yet", yesterday)
+        # --- Step 4: PM resolution for yesterday ---
+        logger.info("Fetching PM resolution for %s / %s...", ville, yesterday)
+        pm_temp = fetch_pm_resolution(yesterday, city["slug_name"])
 
-    # Sort rows by date and write
-    rows.sort(key=lambda r: r["date"])
+        yesterday_str = yesterday.isoformat()
+        idx_y = _ensure_row(rows, ville, yesterday_str)
+
+        if pm_temp is not None:
+            rows[idx_y]["pm_max_temp"] = _fmt(pm_temp)
+            logger.info("Updated yesterday's PM temp for %s: %s°C", ville, _fmt(pm_temp))
+        else:
+            logger.info("PM resolution for %s / %s not available yet", ville, yesterday)
+
+    # Sort rows by ville then date and write
+    rows.sort(key=lambda r: (r["ville"], r["date"]))
     _write_csv(rows)
     logger.info("Saved %d rows to %s", len(rows), DATA_FILE)
 

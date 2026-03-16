@@ -1,3 +1,8 @@
-date,ecmwf_j2,gfs_j2,convergence_j2,ecmwf_j1,gfs_j1,convergence_j1,ecmwf_j,gfs_j,convergence_j,pm_max_temp
-2026-03-14,,,,,,,,,,11
-2026-03-15,10,10,yes,11,11,yes,11,12,no,
+ville,date,ecmwf_j2,gfs_j2,convergence_j2,ecmwf_j1,gfs_j1,convergence_j1,ecmwf_j,gfs_j,convergence_j,pm_max_temp
+London,2026-03-14,,,,,,,,,,11
+London,2026-03-15,10,10,yes,11,11,yes,11,12,no,13
+London,2026-03-16,11,10,no,11,11,yes,12,12,yes,
+Sao Paulo,2026-03-15,,,,,,,,,,30
+Sao Paulo,2026-03-16,29,30,no,30,30,yes,30,30,yes,
+Tokyo,2026-03-15,,,,,,,,,,14
+Tokyo,2026-03-16,12,14,no,12,12,yes,13,12,no,

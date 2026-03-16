@@ -7,10 +7,28 @@ PROJECT_DIR = Path(__file__).parent
 DATA_FILE = PROJECT_DIR / "history.csv"
 LOG_FILE = PROJECT_DIR / "collector.log"
 
-# --- Station: London City Airport (EGLC) ---
-LATITUDE = 51.5054
-LONGITUDE = 0.0553
-TIMEZONE = "Europe/London"
+# --- Cities ---
+# Each city: slug name for Polymarket, latitude, longitude, timezone
+CITIES = {
+    "London": {
+        "latitude": 51.5054,
+        "longitude": 0.0553,
+        "timezone": "Europe/London",
+        "slug_name": "london",
+    },
+    "Tokyo": {
+        "latitude": 35.6762,
+        "longitude": 139.6503,
+        "timezone": "Asia/Tokyo",
+        "slug_name": "tokyo",
+    },
+    "Sao Paulo": {
+        "latitude": -23.5505,
+        "longitude": -46.6333,
+        "timezone": "America/Sao_Paulo",
+        "slug_name": "sao-paulo",
+    },
+}
 
 # --- APIs ---
 PREVIOUS_RUNS_API = "https://previous-runs-api.open-meteo.com/v1/forecast"
