@@ -1,0 +1,39 @@
+name: Deploy Cloud Run Function
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "paper_trade/**"
+      - ".github/workflows/deploy.yml"
+
+env:
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_REGION: europe-west1
+  FUNCTION_NAME: weather-collector
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Deploy Cloud Run Function
+        uses: google-github-actions/deploy-cloud-functions@v3
+        with:
+          name: ${{ env.FUNCTION_NAME }}
+          runtime: python313
+          region: ${{ env.GCP_REGION }}
+          entry_point: run_collector
+          source_dir: paper_trade
+          memory: 256Mi
+          timeout: 120
+          max_instances: 1
+          environment_variables: |-
+            GCS_BUCKET=bucket_meteo

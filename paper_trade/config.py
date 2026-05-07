@@ -1,11 +1,10 @@
 """Configuration for the paper trade data collector."""
 
-from pathlib import Path
+import os
 
-# --- Paths ---
-PROJECT_DIR = Path(__file__).parent
-DATA_FILE = PROJECT_DIR / "history.csv"
-LOG_FILE = PROJECT_DIR / "collector.log"
+# --- GCS Storage ---
+GCS_BUCKET = os.environ.get("GCS_BUCKET", "bucket_meteo")
+GCS_BLOB_NAME = "history.csv"
 
 # --- Cities ---
 # Each city: slug name for Polymarket, latitude, longitude, timezone

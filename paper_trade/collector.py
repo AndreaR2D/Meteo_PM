@@ -16,21 +16,22 @@ CSV columns:
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
 import re
 import sys
-from datetime import date, datetime, timedelta
-from pathlib import Path
+from datetime import date, timedelta
 
 import requests
+from google.cloud import storage
 
 from config import (
     CITIES,
-    DATA_FILE,
     FORECAST_API,
     GAMMA_API,
-    LOG_FILE,
+    GCS_BLOB_NAME,
+    GCS_BUCKET,
     MODELS,
     MONTH_NAMES,
     PREVIOUS_RUNS_API,
@@ -38,17 +39,24 @@ from config import (
     YEAR_SUFFIX_START_YEAR,
 )
 
-# --- Logging setup ---
+# --- Logging setup (stdout only for Cloud Run) ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ],
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
+
+# --- GCS client (reused across invocations) ---
+_gcs_client: storage.Client | None = None
+
+
+def _get_bucket() -> storage.Bucket:
+    global _gcs_client
+    if _gcs_client is None:
+        _gcs_client = storage.Client()
+    return _gcs_client.bucket(GCS_BUCKET)
 
 CSV_COLUMNS = [
     "ville", "date",
@@ -74,28 +82,31 @@ def _build_slug(target: date, slug_name: str) -> str:
 
 
 def _read_csv() -> list[dict]:
-    """Read existing history.csv into a list of dicts."""
-    if not DATA_FILE.exists():
+    """Read existing history.csv from GCS bucket."""
+    blob = _get_bucket().blob(GCS_BLOB_NAME)
+    if not blob.exists():
+        logger.info("No existing %s in gs://%s, starting fresh", GCS_BLOB_NAME, GCS_BUCKET)
         return []
-    with open(DATA_FILE, "r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        rows = []
-        for row in reader:
-            # Drop spurious None key from extra trailing commas
-            row.pop(None, None)
-            # Ensure all expected columns exist
-            for col in CSV_COLUMNS:
-                row.setdefault(col, "")
-            rows.append(row)
-        return rows
+    content = blob.download_as_text(encoding="utf-8")
+    reader = csv.DictReader(io.StringIO(content))
+    rows = []
+    for row in reader:
+        row.pop(None, None)
+        for col in CSV_COLUMNS:
+            row.setdefault(col, "")
+        rows.append(row)
+    return rows
 
 
 def _write_csv(rows: list[dict]) -> None:
-    """Write rows back to history.csv."""
-    with open(DATA_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
+    """Write rows to history.csv in GCS bucket (overwrites)."""
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    blob = _get_bucket().blob(GCS_BLOB_NAME)
+    blob.upload_from_string(buf.getvalue(), content_type="text/csv")
+    logger.info("Uploaded %s to gs://%s/%s", GCS_BLOB_NAME, GCS_BUCKET, GCS_BLOB_NAME)
 
 
 def _find_row(rows: list[dict], ville: str, target_date: str) -> int | None:
@@ -473,7 +484,7 @@ def collect() -> None:
     # Sort rows by ville then date and write
     rows.sort(key=lambda r: (r["ville"], r["date"]))
     _write_csv(rows)
-    logger.info("Saved %d rows to %s", len(rows), DATA_FILE)
+    logger.info("Saved %d rows to gs://%s/%s", len(rows), GCS_BUCKET, GCS_BLOB_NAME)
 
 
 # ---------------------------------------------------------------------------

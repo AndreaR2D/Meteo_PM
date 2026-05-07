@@ -22,3 +22,6 @@ paper_trade/cron.log
 
 # Claude
 .claude/
+
+# Cloud Run Functions local testing
+.functionsframework/
