@@ -35,5 +35,6 @@ jobs:
           memory: 256Mi
           timeout: 120
           max_instances: 1
+          service_account: sa-meteo@bot-meteo-495616.iam.gserviceaccount.com
           environment_variables: |-
             GCS_BUCKET=bucket-meteo-pm
