@@ -3,7 +3,7 @@
 import os
 
 # --- GCS Storage ---
-GCS_BUCKET = os.environ.get("GCS_BUCKET", "bucket_meteo")
+GCS_BUCKET = os.environ.get("GCS_BUCKET", "bucket-meteo-pm")
 GCS_BLOB_NAME = "history.csv"
 
 # --- Cities ---

@@ -36,4 +36,4 @@ jobs:
           timeout: 120
           max_instances: 1
           environment_variables: |-
-            GCS_BUCKET=bucket_meteo
+            GCS_BUCKET=bucket-meteo-pm
